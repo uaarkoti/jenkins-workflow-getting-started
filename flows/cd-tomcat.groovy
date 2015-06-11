@@ -1,9 +1,12 @@
-t = new com.cb.web.Tomcat(hostname: "localhost", port: "8180", adminUser: "admin", adminPassword: "tomcat")
+// Global Libraries
+tomcat = new com.cb.web.Tomcat(hostname: "localhost", port: "8180", adminUser: "admin", adminPassword: "tomcat")
 util = new com.cb.util.BasicUtilities()
 
+// Local variables
 artifactName = 'webapp.war'
 artifact = "target/${artifactName}"
 
+// Closures to be executed by tomcat libraries
 deployClosure = {war, url, id -> sh "curl --upload-file ${war} '${url}?path=/${id}&update=true'"}
 undeployClosure = {url, id -> sh "curl '${url}?path=/${id}'"}
 deployClosure.resolveStrategy = Closure.DELEGATE_FIRST
