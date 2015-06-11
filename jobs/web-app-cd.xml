@@ -1,0 +1,92 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<flow-definition plugin="workflow-job@1.4">
+  <actions/>
+  <description></description>
+  <keepDependencies>false</keepDependencies>
+  <properties>
+    <org.jenkinsci.plugins.uniqueid.impl.JobIdStore_-JobIdProperty plugin="unique-id@1.2">
+      <id>
+        <id>NjA5Zjk3NmEtMTIxZC00ZTQ5LWFjN2</id>
+      </id>
+    </org.jenkinsci.plugins.uniqueid.impl.JobIdStore_-JobIdProperty>
+  </properties>
+  <definition class="org.jenkinsci.plugins.workflow.cps.CpsFlowDefinition" plugin="workflow-cps@1.4">
+    <script>tomcat = new com.cb.web.Tomcat(hostname: &quot;localhost&quot;, port: &quot;8180&quot;, adminUser: &quot;admin&quot;, adminPassword: &quot;tomcat&quot;)
+util = new com.cb.util.BasicUtilities()
+
+artifactName = &apos;webapp.war&apos;
+artifact = &quot;target/${artifactName}&quot;
+
+deployClosure = {war, url, id -&gt; sh &quot;curl --upload-file ${war} &apos;${url}?path=/${id}&amp;update=true&apos;&quot;}
+undeployClosure = {url, id -&gt; sh &quot;curl &apos;${url}?path=/${id}&apos;&quot;}
+deployClosure.resolveStrategy = Closure.DELEGATE_FIRST
+undeployClosure.resolveStrategy = Closure.DELEGATE_FIRST
+
+node(&apos;master&apos;) {
+   git url: &apos;https://github.com/jenkinsbyexample/workflow-plugin-pipeline-demo.git&apos;
+   devQAStaging()
+}
+
+production()
+
+def devQAStaging() {
+
+    stage &apos;Build&apos;
+    sh &apos;mvn clean package&apos;
+    archive artifact
+
+    stage &apos;Code Coverage&apos;
+    echo &apos;Using Sonar for code coverage&apos;
+
+    stage &apos;QA&apos;
+
+    parallel(longerTests: {
+        runWithServer {url -&gt;
+            sh &quot;mvn -f sometests/pom.xml test -Durl=${url} -Dduration=10&quot;
+        }
+    }, quickerTests: {
+        runWithServer {url -&gt;
+            sh &quot;mvn -f sometests/pom.xml test -Durl=${url} -Dduration=5&quot;
+        }
+    })
+
+    try {
+        checkpoint(&apos;Before Staging&apos;)
+    } catch (NoSuchMethodError _) {
+        echo &apos;Checkpoint feature available in Jenkins Enterprise by CloudBees.&apos;
+    }
+
+    stage name: &apos;Staging&apos;, concurrency: 1
+    tomcat.deploy(artifact, &apos;staging&apos;, deployClosure)
+}
+
+def production() {
+    input message: &quot;Does ${tomcat.hostUrl}/staging/ look good?&quot;
+    try {
+        checkpoint(&apos;Before production&apos;)
+    } catch (NoSuchMethodError _) {
+        echo &apos;Checkpoint feature available in Jenkins Enterprise by CloudBees.&apos;
+    }
+
+    stage name: &apos;Production&apos;, concurrency: 1
+    node(&apos;master&apos;) {
+        sh &quot;curl -I ${tomcat.hostUrl}/staging/&quot;
+        unarchive mapping: [&apos;target/webapp.war&apos; : &apos;webapp.war&apos;]
+        tomcat.deploy(artifactName, &apos;production&apos;, deployClosure)
+        echo &quot;Deployed to ${tomcat.hostUrl}/production/&quot;
+    }
+}
+
+def runWithServer(body) {
+    def id = util.random()
+    tomcat.deploy(artifact, id, deployClosure)
+    try {
+        body.call &quot;${tomcat.hostUrl}/${id}/&quot;
+    } finally {
+        tomcat.undeploy(id, undeployClosure)
+    }
+}</script>
+    <sandbox>false</sandbox>
+  </definition>
+  <triggers/>
+</flow-definition>
