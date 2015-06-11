@@ -1,0 +1,113 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<flow-definition plugin="workflow-job@1.8">
+  <actions/>
+  <description></description>
+  <keepDependencies>false</keepDependencies>
+  <properties/>
+  <definition class="org.jenkinsci.plugins.workflow.cps.CpsFlowDefinition" plugin="workflow-cps@1.8">
+    <script>// Global Libraries
+
+// Tomcat library to deploy / undeploy to tomcat
+tomcat = new com.cb.web.Tomcat(hostname: &quot;localhost&quot;, port: &quot;8180&quot;, adminUser: &quot;admin&quot;, adminPassword: &quot;tomcat&quot;)
+
+// Simple utility
+util = new com.cb.util.BasicUtilities()
+
+// Local variables
+artifactName = &apos;webapp.war&apos;
+artifact = &quot;target/${artifactName}&quot;
+
+// Closures to be executed by tomcat library to deploy/undeploy
+deployClosure = {war, url, id -&gt; sh &quot;curl --upload-file ${war} &apos;${url}?path=/${id}&amp;update=true&apos;&quot;}
+undeployClosure = {url, id -&gt; sh &quot;curl &apos;${url}?path=/${id}&apos;&quot;}
+deployClosure.resolveStrategy = Closure.DELEGATE_FIRST
+undeployClosure.resolveStrategy = Closure.DELEGATE_FIRST
+
+// Execute the following steps on the master
+node(&apos;master&apos;) {
+   git url: &apos;https://github.com/jenkinsbyexample/workflow-plugin-pipeline-demo.git&apos;
+   devQAStaging()
+}
+
+production()
+
+def devQAStaging() {
+
+    // Execute maven build and archive artifacts
+    stage &apos;Build&apos;
+    sh &apos;mvn clean package&apos;
+    archive artifact
+
+    // TODO : Setup code coverage
+    stage &apos;Code Coverage&apos;
+    echo &apos;Using Sonar for code coverage&apos;
+
+    // Run tests in parallel and publish report
+    stage &apos;QA&apos;
+
+    parallel(longerTests: {
+        runWithServer {url -&gt;
+            sh &quot;mvn -f sometests/pom.xml test -Durl=${url} -Dduration=10&quot;
+        }
+    }, quickerTests: {
+        runWithServer {url -&gt;
+            sh &quot;mvn -f sometests/pom.xml test -Durl=${url} -Dduration=5&quot;
+        }
+    })
+ 
+    step([$class: &apos;JUnitResultArchiver&apos;, testResults: &apos;**/target/surefire-reports/TEST-*.xml&apos;])
+
+    // Assuming the tests above take a while (which is probably true in real world)
+    // Setup a checkpoint so that if the build fails after the checkpoint, its possible
+    // to restart the build from the checkpoint
+    // NOTE: The try/catch block makes sure the build does not fail if checkpoint functionality
+    // doesn&apos;t exist (because its available through CloudBees Jenkins Enterprise)
+    try {
+        checkpoint(&apos;Before Staging&apos;)
+    } catch (NoSuchMethodError _) {
+        echo &apos;Checkpoint feature available in Jenkins Enterprise by CloudBees.&apos;
+    }
+
+    // Make sure only one build can enter this stage
+    stage name: &apos;Staging&apos;, concurrency: 1
+
+    // Deploy the artifact to Tomcat
+    tomcat.deploy(artifact, &apos;staging&apos;, deployClosure)
+}
+
+def production() {
+
+    // Wait for someone to validate that the deployment looks good.
+    // Its also possible to add security here to make sure only people
+    // With a specific role can resume the build from here
+    input message: &quot;Does ${tomcat.hostUrl}/staging/ look good?&quot;
+
+    try {
+        checkpoint(&apos;Before production&apos;)
+    } catch (NoSuchMethodError _) {
+        echo &apos;Checkpoint feature available in Jenkins Enterprise by CloudBees.&apos;
+    }
+
+    stage name: &apos;Production&apos;, concurrency: 1
+    node(&apos;master&apos;) {
+        sh &quot;curl -I ${tomcat.hostUrl}/staging/&quot;
+        unarchive mapping: [&apos;target/webapp.war&apos; : &apos;webapp.war&apos;]
+        tomcat.deploy(artifactName, &apos;production&apos;, deployClosure)
+        echo &quot;Deployed to ${tomcat.hostUrl}/production/&quot;
+    }
+}
+
+// Simple utility function to run tests on tomcat at random url
+def runWithServer(body) {
+    def id = util.random()
+    tomcat.deploy(artifact, id, deployClosure)
+    try {
+        body.call &quot;${tomcat.hostUrl}/${id}/&quot;
+    } finally {
+        tomcat.undeploy(id, undeployClosure)
+    }
+}</script>
+    <sandbox>false</sandbox>
+  </definition>
+  <triggers/>
+</flow-definition>
